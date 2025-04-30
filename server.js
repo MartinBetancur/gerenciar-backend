@@ -14,33 +14,37 @@ const PORT = process.env.PORT || 5000;
 let keepAliveInterval;
 const KEEP_ALIVE_INTERVAL = 5 * 60 * 1000; // 5 minutos
 
-// Configuración CORS simplificada pero efectiva
-const FRONTEND_URL = process.env.FRONTEND_URL || 'https://contactoempresarial.vercel.app';
-console.log('Frontend URL configurado:', FRONTEND_URL);
+// Configuración CORS con dominios específicos - PERMITIMOS CUALQUIER ORIGEN TEMPORALMENTE
+const ALLOWED_ORIGINS = [
+  'https://contactoempresarial.vercel.app',
+  'http://localhost:3000',
+  'http://localhost:5173',
+  // Añadir aquí cualquier otro origen que necesites
+];
+
+// Configuración CORS simplificada y más permisiva para desarrollo
+app.use(cors({
+  origin: '*', // Permitir todos los orígenes para desarrollo
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
+  credentials: true
+}));
+
+// Middleware para responder rápidamente a OPTIONS (preflight)
+app.options('*', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization');
+  res.status(200).end();
+});
 
 // Middleware para registrar todas las solicitudes
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} - Origin: ${req.headers.origin || 'No origin'}`);
-  next();
-});
-
-// Configuración CORS simplificada
-app.use(cors({
-  origin: '*', // Permite cualquier origen
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization']
-}));
-
-// Middleware adicional para forzar los encabezados CORS en cada respuesta
-app.use((req, res, next) => {
+  // Establecer siempre cabeceras CORS permisivas en cada respuesta
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
-  
-  // Manejo específico para OPTIONS (preflight request)
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization');
   next();
 });
 
@@ -57,17 +61,36 @@ const csvFilePath = path.join(__dirname, 'contactos.csv');
 const csvHeaders = ['companyId', 'companyName', 'gpgName', 'timestamp', 'isContacted'];
 
 function ensureCsvExists() {
+  // Asegurarse de que el directorio existe
+  const directory = path.dirname(csvFilePath);
+  if (!fs.existsSync(directory)) {
+    try {
+      fs.mkdirSync(directory, { recursive: true });
+      console.log(`Directorio creado: ${directory}`);
+    } catch (err) {
+      console.error(`Error al crear directorio ${directory}:`, err);
+    }
+  }
+
   // Ensure CSV file exists with headers
   if (!fs.existsSync(csvFilePath)) {
-    const headerLine = stringify([csvHeaders]);
-    fs.writeFileSync(csvFilePath, headerLine);
-    console.log('CSV file created with headers.');
-  } else {
-    const content = fs.readFileSync(csvFilePath, 'utf8').trim();
-    if (!content || !content.startsWith(csvHeaders.join(','))) {
+    try {
       const headerLine = stringify([csvHeaders]);
       fs.writeFileSync(csvFilePath, headerLine);
-      console.log('CSV file header corrected.');
+      console.log('CSV file created with headers.');
+    } catch (err) {
+      console.error('Error creating CSV file:', err);
+    }
+  } else {
+    try {
+      const content = fs.readFileSync(csvFilePath, 'utf8').trim();
+      if (!content || !content.startsWith(csvHeaders.join(','))) {
+        const headerLine = stringify([csvHeaders]);
+        fs.writeFileSync(csvFilePath, headerLine);
+        console.log('CSV file header corrected.');
+      }
+    } catch (err) {
+      console.error('Error checking CSV headers:', err);
     }
   }
 }
@@ -109,6 +132,14 @@ function loadContactsFromCSV() {
 
 // Precarga contactos al inicializar
 loadContactsFromCSV();
+
+// Ruta para probar CORS explícitamente
+app.get('/api/test-cors', (req, res) => {
+  res.status(200).json({
+    message: 'CORS está configurado correctamente',
+    origin: req.headers.origin || 'No origin detected'
+  });
+});
 
 app.get('/api/contact/:companyId', (req, res) => {
   const { companyId } = req.params;
@@ -158,8 +189,17 @@ app.post('/api/contact', (req, res) => {
   
   console.log('Datos recibidos en POST /api/contact:', { companyId, companyName, gpgName });
 
-  if (!companyId || !companyName || !gpgName) {
-    return res.status(400).json({ error: 'Faltan datos (companyId, companyName, gpgName)' });
+  // Validar que los datos necesarios estén presentes
+  if (!companyId || companyId === undefined) {
+    return res.status(400).json({ error: 'Falta el ID de la empresa (companyId)' });
+  }
+  
+  if (!companyName || companyName === undefined) {
+    return res.status(400).json({ error: 'Falta el nombre de la empresa (companyName)' });
+  }
+  
+  if (!gpgName || gpgName === undefined) {
+    return res.status(400).json({ error: 'Falta el nombre de contacto (gpgName)' });
   }
 
   try {
@@ -190,20 +230,31 @@ app.post('/api/contact', (req, res) => {
     contacts.push(newRecord);
 
     // Y guardamos en disco
-    const recordForCsv = {
-      ...newRecord,
-      isContacted: 'true'  // En CSV guardamos como string
-    };
-    
-    const line = stringify([recordForCsv], { header: false });
-    fs.appendFileSync(csvFilePath, line);
-
-    console.log(`Contact registered for company ${companyId} by ${gpgName}`);
-    return res.status(201).json({
-      message: 'Contacto registrado exitosamente',
-      isContacted: true,
-      gpgName
-    });
+    try {
+      const recordForCsv = {
+        ...newRecord,
+        isContacted: 'true'  // En CSV guardamos como string
+      };
+      
+      const line = stringify([recordForCsv], { header: false });
+      fs.appendFileSync(csvFilePath, line);
+      console.log(`Contact registered for company ${companyId} by ${gpgName}`);
+      
+      return res.status(201).json({
+        message: 'Contacto registrado exitosamente',
+        isContacted: true,
+        gpgName
+      });
+    } catch (fsError) {
+      console.error('Error saving to CSV file:', fsError);
+      // Aunque haya error al guardar en el CSV, devolvemos éxito ya que está en memoria
+      return res.status(201).json({
+        message: 'Contacto registrado exitosamente (solo en memoria)',
+        isContacted: true,
+        gpgName,
+        warning: 'No se pudo guardar en archivo CSV'
+      });
+    }
 
   } catch (error) {
     console.error('Error saving contact:', error);
@@ -233,7 +284,7 @@ function keepAlive() {
 // Iniciar el servidor y el keep-alive
 const server = app.listen(PORT, () => {
   console.log(`Servidor corriendo en el puerto ${PORT}`);
-  console.log(`CORS habilitado para todos los orígenes`);
+  console.log(`CORS habilitado para cualquier origen (modo desarrollo)`);
   
   // Iniciar el intervalo de keep-alive
   keepAliveInterval = setInterval(keepAlive, KEEP_ALIVE_INTERVAL);
