@@ -10,14 +10,48 @@ const { stringify } = require('csv-stringify/sync');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// CORS: restringe al dominio de tu frontend en Vercel
+// CORS: configuración mejorada
 const FRONTEND_URL = process.env.FRONTEND_URL;
-if (!FRONTEND_URL) {
-  console.warn('⚠️  FRONTEND_URL no definido, CORS abierto a todos los orígenes');
-}
+console.log('Frontend URL configurado:', FRONTEND_URL || 'No definido, usando CORS abierto');
+
+// Configuración de CORS más permisiva para desarrollo
 app.use(cors({
-  origin: FRONTEND_URL || '*'
+  origin: function(origin, callback) {
+    // Permitir solicitudes sin origen (como herramientas de API)
+    if (!origin) return callback(null, true);
+    
+    // Si tenemos un FRONTEND_URL configurado, verificamos
+    if (FRONTEND_URL) {
+      // Permitir el origen configurado y localhost para desarrollo
+      const allowedOrigins = [
+        FRONTEND_URL,
+        'http://localhost:3000',
+        'http://localhost:5173',
+        'http://127.0.0.1:3000',
+        'http://127.0.0.1:5173'
+      ];
+      
+      if (allowedOrigins.indexOf(origin) !== -1 || !origin) {
+        callback(null, true);
+      } else {
+        console.warn(`Origen bloqueado por CORS: ${origin}`);
+        callback(null, false);
+      }
+    } else {
+      // Si no hay FRONTEND_URL, permitimos cualquier origen
+      callback(null, true);
+    }
+  },
+  credentials: true, // Permitir cookies en solicitudes cross-origin
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization']
 }));
+
+// Middleware para registrar todas las solicitudes
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} - Origin: ${req.headers.origin || 'No origin'}`);
+  next();
+});
 
 app.use(bodyParser.json());
 
@@ -69,6 +103,11 @@ function readContactsFromCSV() {
   }
 }
 
+// Ruta de prueba para verificar que el servidor está funcionando
+app.get('/api/ping', (req, res) => {
+  res.status(200).json({ message: 'API funcionando correctamente', timestamp: new Date().toISOString() });
+});
+
 app.get('/api/contact/:companyId', (req, res) => {
   const { companyId } = req.params;
 
@@ -101,6 +140,8 @@ app.get('/api/contact/:companyId', (req, res) => {
 
 app.post('/api/contact', (req, res) => {
   const { companyId, companyName, gpgName } = req.body;
+  
+  console.log('Datos recibidos en POST /api/contact:', { companyId, companyName, gpgName });
 
   if (!companyId || !companyName || !gpgName) {
     return res.status(400).json({ error: 'Faltan datos (companyId, companyName, gpgName)' });
@@ -146,9 +187,19 @@ app.post('/api/contact', (req, res) => {
   }
 });
 
+// Ruta catch-all para mostrar un error amigable
+app.use('*', (req, res) => {
+  res.status(404).json({
+    error: 'Ruta no encontrada',
+    message: 'La ruta solicitada no existe en esta API'
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en el puerto ${PORT}`);
   if (FRONTEND_URL) {
     console.log(`CORS habilitado para: ${FRONTEND_URL}`);
+  } else {
+    console.log('CORS habilitado para todos los orígenes (modo desarrollo)');
   }
 });
