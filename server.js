@@ -10,46 +10,33 @@ const { stringify } = require('csv-stringify/sync');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// CORS: configuración mejorada
-const FRONTEND_URL = process.env.FRONTEND_URL;
-console.log('Frontend URL configurado:', FRONTEND_URL || 'No definido, usando CORS abierto');
-
-// Configuración de CORS más permisiva para desarrollo
-app.use(cors({
-  origin: function(origin, callback) {
-    // Permitir solicitudes sin origen (como herramientas de API)
-    if (!origin) return callback(null, true);
-    
-    // Si tenemos un FRONTEND_URL configurado, verificamos
-    if (FRONTEND_URL) {
-      // Permitir el origen configurado y localhost para desarrollo
-      const allowedOrigins = [
-        FRONTEND_URL,
-        'http://localhost:3000',
-        'http://localhost:5173',
-        'http://127.0.0.1:3000',
-        'http://127.0.0.1:5173'
-      ];
-      
-      if (allowedOrigins.indexOf(origin) !== -1 || !origin) {
-        callback(null, true);
-      } else {
-        console.warn(`Origen bloqueado por CORS: ${origin}`);
-        callback(null, false);
-      }
-    } else {
-      // Si no hay FRONTEND_URL, permitimos cualquier origen
-      callback(null, true);
-    }
-  },
-  credentials: true, // Permitir cookies en solicitudes cross-origin
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization']
-}));
+// Configuración CORS simplificada pero efectiva
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://contactoempresarial.vercel.app';
+console.log('Frontend URL configurado:', FRONTEND_URL);
 
 // Middleware para registrar todas las solicitudes
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} - Origin: ${req.headers.origin || 'No origin'}`);
+  next();
+});
+
+// Configuración CORS simplificada
+app.use(cors({
+  origin: '*', // Permite cualquier origen - para producción podrías limitar a tu dominio específico
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization']
+}));
+
+// Middleware adicional para forzar los encabezados CORS en cada respuesta
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
+  
+  // Manejo específico para OPTIONS (preflight request)
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
   next();
 });
 
@@ -197,9 +184,5 @@ app.use('*', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en el puerto ${PORT}`);
-  if (FRONTEND_URL) {
-    console.log(`CORS habilitado para: ${FRONTEND_URL}`);
-  } else {
-    console.log('CORS habilitado para todos los orígenes (modo desarrollo)');
-  }
+  console.log(`CORS habilitado para todos los orígenes`);
 });
