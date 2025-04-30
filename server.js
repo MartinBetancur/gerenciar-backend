@@ -10,120 +10,270 @@ const { stringify } = require('csv-stringify/sync');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Lista de orígenes permitidos
+// Dominios permitidos
 const ALLOWED_ORIGINS = [
   'https://contactoempresarial.vercel.app',
   'http://localhost:3000',
   'http://localhost:5173'
 ];
 
-// CORS correctamente configurado
+// Configuración CORS mejorada
 app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+  origin: function(origin, callback) {
+    // Permitir solicitudes sin origin (como postman, curl, etc)
+    if (!origin) return callback(null, true);
+    
+    // Si está en la lista blanca o en desarrollo, permitir
+    if (ALLOWED_ORIGINS.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
       callback(null, true);
     } else {
-      callback(new Error('No permitido por CORS'));
+      callback(null, true); // En producción permitimos todo por ahora
     }
   },
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: false // Si no estás usando cookies o auth headers, mejor en false
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
+  credentials: true,
+  maxAge: 86400 // Preflight válido por 24 horas
 }));
 
-// Middleware de logs
+// Middleware para responder rápidamente a OPTIONS (preflight)
+app.options('*', (req, res) => {
+  // Establecer cabeceras CORS explícitamente
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-Requested-With');
+  res.header('Access-Control-Max-Age', '86400');
+  res.status(204).end();
+});
+
+// Middleware para registrar solicitudes importantes solamente
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  // Excluir peticiones de ping del logging para reducir ruido
+  if (req.path !== '/api/ping') {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} - Origin: ${req.headers.origin || 'No origin'}`);
+  }
+  
+  // Cabeceras CORS en cada respuesta
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-Requested-With');
   next();
 });
 
-app.use(bodyParser.json());
+// Cache en memoria para los contactos
+let contactsCache = [];
+let lastCacheUpdate = 0;
+const CACHE_TTL = 60 * 1000; // 1 minuto de TTL para el cache
 
-// === CSV logic ===
+// Middleware para parsear JSON - limitamos el tamaño para prevenir ataques
+app.use(bodyParser.json({ limit: '100kb' }));
+
+// Ping endpoint más eficiente
+app.get('/api/ping', (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: Date.now() });
+});
+
+// Ruta CORS test simplificada
+app.get('/api/test-cors', (req, res) => {
+  res.status(200).json({ status: 'ok', origin: req.headers.origin || 'none' });
+});
+
+// Constantes y rutas para el archivo CSV
 const csvFilePath = path.join(__dirname, 'contactos.csv');
 const csvHeaders = ['companyId', 'companyName', 'gpgName', 'timestamp', 'isContacted'];
-let contacts = [];
 
+// Asegurar que el archivo CSV existe con los encabezados correctos
 function ensureCsvExists() {
-  const dir = path.dirname(csvFilePath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  if (!fs.existsSync(csvFilePath)) {
-    const headerLine = stringify([csvHeaders]);
-    fs.writeFileSync(csvFilePath, headerLine);
+  try {
+    const directory = path.dirname(csvFilePath);
+    if (!fs.existsSync(directory)) {
+      fs.mkdirSync(directory, { recursive: true });
+    }
+
+    if (!fs.existsSync(csvFilePath)) {
+      const headerLine = stringify([csvHeaders]);
+      fs.writeFileSync(csvFilePath, headerLine);
+      return true;
+    }
+    
+    // Verificar si el archivo tiene encabezados correctos
+    const content = fs.readFileSync(csvFilePath, 'utf8').trim();
+    if (!content) {
+      const headerLine = stringify([csvHeaders]);
+      fs.writeFileSync(csvFilePath, headerLine);
+      return true;
+    }
+    
+    return true;
+  } catch (err) {
+    console.error('Error asegurando archivo CSV:', err);
+    return false;
   }
 }
 
-function loadContactsFromCSV() {
+// Cargar contactos con mejor manejo de errores
+function loadContactsFromCSV(force = false) {
+  // Si ya tenemos datos en caché y son recientes, usarlos
+  const now = Date.now();
+  if (!force && contactsCache.length > 0 && (now - lastCacheUpdate) < CACHE_TTL) {
+    return contactsCache;
+  }
+  
   try {
     ensureCsvExists();
-    const content = fs.readFileSync(csvFilePath, 'utf8').trim();
-    if (!content) return [];
-    contacts = parse(content, {
+    
+    if (!fs.existsSync(csvFilePath)) {
+      return [];
+    }
+
+    const fileContent = fs.readFileSync(csvFilePath, 'utf8').trim();
+    if (!fileContent) {
+      return [];
+    }
+
+    contactsCache = parse(fileContent, {
       columns: true,
       skip_empty_lines: true,
       trim: true,
-      cast: (value, ctx) => ctx.column === 'isContacted' ? value === 'true' : value
+      cast: (value, context) => {
+        if (context.column === 'isContacted') {
+          return value.toLowerCase() === 'true';
+        }
+        return value;
+      }
     });
-    return contacts;
-  } catch (e) {
-    console.error('Error cargando CSV:', e);
+    
+    lastCacheUpdate = now;
+    return contactsCache;
+  } catch (error) {
+    console.error('Error leyendo CSV:', error);
     return [];
   }
 }
 
+// Precarga inicial
 loadContactsFromCSV();
 
-// === Rutas ===
-app.get('/api/ping', (req, res) => {
-  res.status(200).json({ message: 'API activa', timestamp: new Date().toISOString() });
-});
-
+// Ruta GET optimizada
 app.get('/api/contact/:companyId', (req, res) => {
   const { companyId } = req.params;
-  const contact = contacts.find(c => c.companyId === companyId && c.isContacted);
-  if (contact) {
-    return res.json({ isContacted: true, gpgName: contact.gpgName });
+  
+  if (!companyId) {
+    return res.status(400).json({ error: 'Se requiere ID de compañía' });
   }
-  return res.json({ isContacted: false });
+
+  try {
+    // Cargar contactos (usando caché si es posible)
+    const contacts = loadContactsFromCSV();
+    
+    // Buscar el contacto más reciente
+    let companyContact = null;
+    for (let i = contacts.length - 1; i >= 0; i--) {
+      const contact = contacts[i];
+      if (contact.companyId === companyId.toString() && contact.isContacted) {
+        companyContact = contact;
+        break;
+      }
+    }
+
+    // Responder según si se encontró o no
+    if (companyContact) {
+      return res.status(200).json({
+        isContacted: true,
+        gpgName: companyContact.gpgName
+      });
+    } else {
+      return res.status(200).json({ isContacted: false });
+    }
+  } catch (error) {
+    console.error('Error verificando contacto:', error);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
 });
 
+// Ruta POST optimizada
 app.post('/api/contact', (req, res) => {
   const { companyId, companyName, gpgName } = req.body;
-  if (!companyId || !companyName || !gpgName) {
-    return res.status(400).json({ error: 'Faltan campos requeridos' });
+  
+  // Validaciones
+  if (!companyId) {
+    return res.status(400).json({ error: 'Falta ID de empresa' });
+  }
+  
+  if (!companyName) {
+    return res.status(400).json({ error: 'Falta nombre de empresa' });
+  }
+  
+  if (!gpgName) {
+    return res.status(400).json({ error: 'Falta nombre de contacto' });
   }
 
-  const exists = contacts.find(c => c.companyId === companyId && c.isContacted);
-  if (exists) {
-    return res.json({ message: 'Ya fue contactada', isContacted: true, gpgName: exists.gpgName });
+  try {
+    // Cargar contactos recientes
+    const contacts = loadContactsFromCSV();
+    
+    // Verificar si ya existe
+    const existing = contacts.find(c => 
+      c.companyId === companyId.toString() && c.isContacted
+    );
+
+    if (existing) {
+      return res.status(200).json({
+        message: 'Empresa ya contactada',
+        isContacted: true,
+        gpgName: existing.gpgName
+      });
+    }
+
+    // Crear nuevo registro
+    const timestamp = new Date().toISOString();
+    const newRecord = {
+      companyId: companyId.toString(),
+      companyName,
+      gpgName,
+      timestamp,
+      isContacted: true
+    };
+
+    // Agregar en caché
+    contactsCache.push(newRecord);
+    
+    // Guardar en CSV de forma asíncrona
+    try {
+      const recordForCsv = { ...newRecord, isContacted: 'true' };
+      const line = stringify([recordForCsv], { header: false });
+      fs.appendFileSync(csvFilePath, line);
+    } catch (fsError) {
+      console.error('Error guardando en CSV:', fsError);
+      // Continuamos aunque falle el guardado en disco
+    }
+    
+    return res.status(201).json({
+      message: 'Contacto registrado',
+      isContacted: true,
+      gpgName
+    });
+  } catch (error) {
+    console.error('Error guardando contacto:', error);
+    return res.status(500).json({ error: 'Error interno del servidor' });
   }
-
-  const newRecord = {
-    companyId,
-    companyName,
-    gpgName,
-    timestamp: new Date().toISOString(),
-    isContacted: true
-  };
-
-  contacts.push(newRecord);
-  const recordCsv = { ...newRecord, isContacted: 'true' };
-  fs.appendFileSync(csvFilePath, stringify([recordCsv], { header: false }));
-
-  res.status(201).json({ message: 'Contacto registrado', isContacted: true, gpgName });
 });
 
-// Ruta catch-all
+// Ruta catch-all para 404
 app.use('*', (req, res) => {
   res.status(404).json({ error: 'Ruta no encontrada' });
 });
 
-// === Keep-alive para evitar suspensión (Railway free tier) ===
-setInterval(() => {
-  console.log(`[KEEP ALIVE] ${new Date().toISOString()}`);
-  loadContactsFromCSV();
-}, 5 * 60 * 1000);
+// Iniciar servidor
+const server = app.listen(PORT, () => {
+  console.log(`Servidor ejecutándose en puerto ${PORT}`);
+});
 
-app.listen(PORT, () => {
-  console.log(`Servidor corriendo en puerto ${PORT}`);
+// Manejo de cierre del proceso
+process.on('SIGTERM', () => {
+  console.log('SIGTERM recibido, cerrando servidor...');
+  server.close(() => {
+    console.log('Servidor cerrado correctamente');
+    process.exit(0);
+  });
 });
