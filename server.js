@@ -10,6 +10,10 @@ const { stringify } = require('csv-stringify/sync');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Keep-alive para mantener el servidor activo
+let keepAliveInterval;
+const KEEP_ALIVE_INTERVAL = 5 * 60 * 1000; // 5 minutos
+
 // Configuración CORS simplificada pero efectiva
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://contactoempresarial.vercel.app';
 console.log('Frontend URL configurado:', FRONTEND_URL);
@@ -22,7 +26,7 @@ app.use((req, res, next) => {
 
 // Configuración CORS simplificada
 app.use(cors({
-  origin: '*', // Permite cualquier origen - para producción podrías limitar a tu dominio específico
+  origin: '*', // Permite cualquier origen
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization']
 }));
@@ -40,30 +44,40 @@ app.use((req, res, next) => {
   next();
 });
 
+// Middleware para responder rápidamente a las solicitudes de ping
+app.get('/api/ping', (req, res) => {
+  res.status(200).json({ message: 'API funcionando correctamente', timestamp: new Date().toISOString() });
+});
+
 app.use(bodyParser.json());
 
-// CSV Path
+// Función para cargar el archivo CSV en memoria
+let contacts = [];
 const csvFilePath = path.join(__dirname, 'contactos.csv');
 const csvHeaders = ['companyId', 'companyName', 'gpgName', 'timestamp', 'isContacted'];
 
-// Ensure CSV file exists with headers
-if (!fs.existsSync(csvFilePath)) {
-  const headerLine = stringify([csvHeaders]);
-  fs.writeFileSync(csvFilePath, headerLine);
-  console.log('CSV file created with headers.');
-} else {
-  const content = fs.readFileSync(csvFilePath, 'utf8').trim();
-  if (!content || !content.startsWith(csvHeaders.join(','))) {
+function ensureCsvExists() {
+  // Ensure CSV file exists with headers
+  if (!fs.existsSync(csvFilePath)) {
     const headerLine = stringify([csvHeaders]);
     fs.writeFileSync(csvFilePath, headerLine);
-    console.log('CSV file header corrected.');
+    console.log('CSV file created with headers.');
+  } else {
+    const content = fs.readFileSync(csvFilePath, 'utf8').trim();
+    if (!content || !content.startsWith(csvHeaders.join(','))) {
+      const headerLine = stringify([csvHeaders]);
+      fs.writeFileSync(csvFilePath, headerLine);
+      console.log('CSV file header corrected.');
+    }
   }
 }
 
-function readContactsFromCSV() {
+function loadContactsFromCSV() {
   try {
+    ensureCsvExists();
+    
     if (!fs.existsSync(csvFilePath)) {
-      console.log('CSV file does not exist.');
+      console.log('CSV file does not exist after creation attempt.');
       return [];
     }
 
@@ -73,7 +87,7 @@ function readContactsFromCSV() {
       return [];
     }
 
-    return parse(fileContent, {
+    contacts = parse(fileContent, {
       columns: true,
       skip_empty_lines: true,
       trim: true,
@@ -84,28 +98,42 @@ function readContactsFromCSV() {
         return value;
       }
     });
+    
+    console.log(`Loaded ${contacts.length} contacts from CSV.`);
+    return contacts;
   } catch (error) {
     console.error('Error reading or parsing CSV:', error);
     return [];
   }
 }
 
-// Ruta de prueba para verificar que el servidor está funcionando
-app.get('/api/ping', (req, res) => {
-  res.status(200).json({ message: 'API funcionando correctamente', timestamp: new Date().toISOString() });
-});
+// Precarga contactos al inicializar
+loadContactsFromCSV();
 
 app.get('/api/contact/:companyId', (req, res) => {
   const { companyId } = req.params;
 
   try {
-    const contacts = readContactsFromCSV();
+    // Buscamos en la memoria primero
     let companyContact = null;
-
     for (let i = contacts.length - 1; i >= 0; i--) {
       if (contacts[i].companyId === companyId.toString() && contacts[i].isContacted) {
         companyContact = contacts[i];
         break;
+      }
+    }
+
+    // Si no lo encontramos en memoria, cargamos de nuevo del archivo
+    if (!companyContact) {
+      // Intentamos una sola vez recargar del archivo
+      loadContactsFromCSV();
+      
+      // Buscamos nuevamente
+      for (let i = contacts.length - 1; i >= 0; i--) {
+        if (contacts[i].companyId === companyId.toString() && contacts[i].isContacted) {
+          companyContact = contacts[i];
+          break;
+        }
       }
     }
 
@@ -135,7 +163,7 @@ app.post('/api/contact', (req, res) => {
   }
 
   try {
-    const contacts = readContactsFromCSV();
+    // Verificar si ya existe en memoria
     const existing = contacts.find(c =>
       c.companyId === companyId.toString() && c.isContacted
     );
@@ -155,10 +183,19 @@ app.post('/api/contact', (req, res) => {
       companyName,
       gpgName,
       timestamp,
-      isContacted: 'true'
+      isContacted: true  // En memoria guardamos como boolean
     };
 
-    const line = stringify([newRecord], { header: false });
+    // Agregamos al array en memoria
+    contacts.push(newRecord);
+
+    // Y guardamos en disco
+    const recordForCsv = {
+      ...newRecord,
+      isContacted: 'true'  // En CSV guardamos como string
+    };
+    
+    const line = stringify([recordForCsv], { header: false });
     fs.appendFileSync(csvFilePath, line);
 
     console.log(`Contact registered for company ${companyId} by ${gpgName}`);
@@ -182,7 +219,33 @@ app.use('*', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
+// Función para mantener vivo el servidor
+function keepAlive() {
+  console.log(`[${new Date().toISOString()}] Ejecutando keep-alive...`);
+  try {
+    // Operación básica para mantener activo el proceso
+    loadContactsFromCSV();
+  } catch (error) {
+    console.error('Error en keep-alive:', error);
+  }
+}
+
+// Iniciar el servidor y el keep-alive
+const server = app.listen(PORT, () => {
   console.log(`Servidor corriendo en el puerto ${PORT}`);
   console.log(`CORS habilitado para todos los orígenes`);
+  
+  // Iniciar el intervalo de keep-alive
+  keepAliveInterval = setInterval(keepAlive, KEEP_ALIVE_INTERVAL);
+  console.log(`Keep-alive configurado para ejecutarse cada ${KEEP_ALIVE_INTERVAL / 1000 / 60} minutos`);
+});
+
+// Manejar la terminación del proceso
+process.on('SIGTERM', () => {
+  console.log('SIGTERM recibido, cerrando servidor...');
+  clearInterval(keepAliveInterval);
+  server.close(() => {
+    console.log('Servidor cerrado correctamente');
+    process.exit(0);
+  });
 });
