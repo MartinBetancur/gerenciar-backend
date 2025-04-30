@@ -1,4 +1,3 @@
-// backend/server.js
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
@@ -20,14 +19,11 @@ const ALLOWED_ORIGINS = [
 // Configuración CORS mejorada
 app.use(cors({
   origin: function(origin, callback) {
-    // Permitir solicitudes sin origin (como postman, curl, etc)
     if (!origin) return callback(null, true);
-    
-    // Si está en la lista blanca o en desarrollo, permitir
     if (ALLOWED_ORIGINS.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
       callback(null, true);
     } else {
-      callback(null, true); // En producción permitimos todo por ahora
+      callback(null, true); // Permitimos todo por ahora en producción
     }
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -38,7 +34,6 @@ app.use(cors({
 
 // Middleware para responder rápidamente a OPTIONS (preflight)
 app.options('*', (req, res) => {
-  // Establecer cabeceras CORS explícitamente
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-Requested-With');
@@ -48,12 +43,9 @@ app.options('*', (req, res) => {
 
 // Middleware para registrar solicitudes importantes solamente
 app.use((req, res, next) => {
-  // Excluir peticiones de ping del logging para reducir ruido
   if (req.path !== '/api/ping') {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} - Origin: ${req.headers.origin || 'No origin'}`);
   }
-  
-  // Cabeceras CORS en cada respuesta
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-Requested-With');
@@ -65,7 +57,7 @@ let contactsCache = [];
 let lastCacheUpdate = 0;
 const CACHE_TTL = 60 * 1000; // 1 minuto de TTL para el cache
 
-// Middleware para parsear JSON - limitamos el tamaño para prevenir ataques
+// Middleware para parsear JSON
 app.use(bodyParser.json({ limit: '100kb' }));
 
 // Ping endpoint más eficiente
@@ -96,14 +88,13 @@ function ensureCsvExists() {
       return true;
     }
     
-    // Verificar si el archivo tiene encabezados correctos
     const content = fs.readFileSync(csvFilePath, 'utf8').trim();
     if (!content) {
       const headerLine = stringify([csvHeaders]);
       fs.writeFileSync(csvFilePath, headerLine);
       return true;
     }
-    
+
     return true;
   } catch (err) {
     console.error('Error asegurando archivo CSV:', err);
@@ -113,7 +104,6 @@ function ensureCsvExists() {
 
 // Cargar contactos con mejor manejo de errores
 function loadContactsFromCSV(force = false) {
-  // Si ya tenemos datos en caché y son recientes, usarlos
   const now = Date.now();
   if (!force && contactsCache.length > 0 && (now - lastCacheUpdate) < CACHE_TTL) {
     return contactsCache;
@@ -157,17 +147,16 @@ loadContactsFromCSV();
 // Ruta GET optimizada
 app.get('/api/contact/:companyId', (req, res) => {
   const { companyId } = req.params;
-  
-  if (!companyId) {
-    return res.status(400).json({ error: 'Se requiere ID de compañía' });
+
+  // Validación del parámetro companyId
+  if (!companyId || isNaN(companyId)) {
+    return res.status(400).json({ error: 'ID de compañía inválido' });
   }
 
   try {
-    // Cargar contactos (usando caché si es posible)
     const contacts = loadContactsFromCSV();
-    
-    // Buscar el contacto más reciente
     let companyContact = null;
+
     for (let i = contacts.length - 1; i >= 0; i--) {
       const contact = contacts[i];
       if (contact.companyId === companyId.toString() && contact.isContacted) {
@@ -176,7 +165,6 @@ app.get('/api/contact/:companyId', (req, res) => {
       }
     }
 
-    // Responder según si se encontró o no
     if (companyContact) {
       return res.status(200).json({
         isContacted: true,
@@ -195,7 +183,6 @@ app.get('/api/contact/:companyId', (req, res) => {
 app.post('/api/contact', (req, res) => {
   const { companyId, companyName, gpgName } = req.body;
   
-  // Validaciones
   if (!companyId) {
     return res.status(400).json({ error: 'Falta ID de empresa' });
   }
@@ -209,10 +196,7 @@ app.post('/api/contact', (req, res) => {
   }
 
   try {
-    // Cargar contactos recientes
     const contacts = loadContactsFromCSV();
-    
-    // Verificar si ya existe
     const existing = contacts.find(c => 
       c.companyId === companyId.toString() && c.isContacted
     );
@@ -225,7 +209,6 @@ app.post('/api/contact', (req, res) => {
       });
     }
 
-    // Crear nuevo registro
     const timestamp = new Date().toISOString();
     const newRecord = {
       companyId: companyId.toString(),
@@ -235,19 +218,16 @@ app.post('/api/contact', (req, res) => {
       isContacted: true
     };
 
-    // Agregar en caché
     contactsCache.push(newRecord);
     
-    // Guardar en CSV de forma asíncrona
     try {
       const recordForCsv = { ...newRecord, isContacted: 'true' };
       const line = stringify([recordForCsv], { header: false });
       fs.appendFileSync(csvFilePath, line);
     } catch (fsError) {
       console.error('Error guardando en CSV:', fsError);
-      // Continuamos aunque falle el guardado en disco
     }
-    
+
     return res.status(201).json({
       message: 'Contacto registrado',
       isContacted: true,
