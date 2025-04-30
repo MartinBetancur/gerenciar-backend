@@ -9,22 +9,8 @@ const { stringify } = require('csv-stringify/sync');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Dominios permitidos
-const ALLOWED_ORIGINS = [
-  'https://contactoempresarial.vercel.app',
-  'http://localhost:3000',
-  'http://localhost:5173'
-];
-
-// Configuración CORS simplificada
-app.use(cors({
-  origin: function(origin, callback) {
-    callback(null, true); // Permitir cualquier origen por ahora
-  },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
-  credentials: true
-}));
+// Dominios permitidos - simplificado para evitar problemas
+app.use(cors());
 
 // Middleware para parsear JSON
 app.use(bodyParser.json({ limit: '100kb' }));
@@ -32,7 +18,7 @@ app.use(bodyParser.json({ limit: '100kb' }));
 // Middleware para registrar solicitudes
 app.use((req, res, next) => {
   if (req.path !== '/api/ping') {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} - Origin: ${req.headers.origin || 'No origin'}`);
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   }
   next();
 });
@@ -122,8 +108,7 @@ app.get('/api/ping', (req, res) => {
   res.status(200).json({ 
     status: 'ok', 
     timestamp: Date.now(),
-    environment: process.env.NODE_ENV || 'development',
-    backendUrl: process.env.BACKEND_URL || 'not set'
+    environment: process.env.NODE_ENV || 'development'
   });
 });
 
@@ -131,8 +116,7 @@ app.get('/api/ping', (req, res) => {
 app.get('/api/test-cors', (req, res) => {
   res.status(200).json({ 
     status: 'ok', 
-    origin: req.headers.origin || 'none',
-    headers: req.headers
+    origin: req.headers.origin || 'none'
   });
 });
 
@@ -155,13 +139,10 @@ app.get('/api/contact/:companyId', (req, res) => {
   const { companyId } = req.params;
 
   // Validación del parámetro companyId
-  if (!companyId || isNaN(companyId)) {
+  if (!companyId || isNaN(Number(companyId))) {
     return res.status(400).json({ error: 'ID de compañía inválido' });
   }
 
-  // Agregamos un pequeño delay para simular carga de red (útil solo en desarrollo)
-  // const artificialDelay = process.env.NODE_ENV === 'development' ? 500 : 0;
-  
   try {
     const contacts = loadContactsFromCSV();
     let companyContact = null;
@@ -174,16 +155,14 @@ app.get('/api/contact/:companyId', (req, res) => {
       }
     }
 
-    // setTimeout(() => {
-      if (companyContact) {
-        return res.status(200).json({
-          isContacted: true,
-          gpgName: companyContact.gpgName
-        });
-      } else {
-        return res.status(200).json({ isContacted: false });
-      }
-    // }, artificialDelay);
+    if (companyContact) {
+      return res.status(200).json({
+        isContacted: true,
+        gpgName: companyContact.gpgName
+      });
+    } else {
+      return res.status(200).json({ isContacted: false });
+    }
   } catch (error) {
     console.error('Error verificando contacto:', error);
     return res.status(500).json({ error: 'Error interno del servidor' });
@@ -266,15 +245,13 @@ app.get('/api/debug/filesystem', (req, res) => {
       csvPath: csvFilePath,
       csvExists,
       fileSize,
-      sampleContent: fileContent,
       contactsInCache: contactsCache.length
     });
   } catch (error) {
     console.error('Error comprobando sistema de archivos:', error);
     res.status(500).json({ 
       error: 'Error verificando sistema de archivos',
-      message: error.message,
-      stack: error.stack
+      message: error.message
     });
   }
 });
