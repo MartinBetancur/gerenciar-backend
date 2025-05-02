@@ -151,7 +151,7 @@ app.post('/api/contact', async (req, res) => {
 
     console.log(`Contact registered for company ${companyId} by ${gpgName}`);
     res.status(201).json({ // 201 Created es más apropiado
-        message: 'Contacto registrado exitosamente',
+        message: 'Contacto registrado exitosament',
         isContacted: true, // Confirmamos el estado
         gpgName: gpgName 
     });
