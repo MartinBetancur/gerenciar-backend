@@ -164,5 +164,5 @@ app.post('/api/contact', async (req, res) => {
 
 // Arrancamos el server
 app.listen(PORT, () => {
-  console.log(`Servidor corriendo en http://localhost:${PORT}`);
+  console.log(`Servidor corriendo en ${PORT}`);
 });
